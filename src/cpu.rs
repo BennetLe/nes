@@ -1,5 +1,33 @@
 use crate::opcodes;
 use std::{collections::HashMap, u16};
+use bitflags::bitflags;
+
+bitflags! {
+    /// # Status Register (P)
+    ///
+    /// 7 6 5 4 3 2 1 0
+    /// N V _ B D I Z C
+    /// | |   | | | | +---- Carry Flag
+    /// | |   | | | +------ Zero Flag
+    /// | |   | | +-------- Interrupt Disable
+    /// | |   | +---------- Decimal Mode(not used on NES)
+    /// | |   +------------ Break Command
+    /// | +---------------- Overflow Flag
+    /// +------------------ Negative Flag
+    pub struct CpuFlags: u8 {
+        const CARRY             = 0b0000_0001;
+        const ZERO              = 0b0000_0010;
+        const INTERRUPT_DISABLE = 0b0000_0100;
+        const DECIMAL_MODE      = 0b0000_1000;
+        const BREAK             = 0b0001_0000;
+        const DISABLED          = 0b0010_0000;
+        const OVERFLOW          = 0b0100_0000;
+        const NEGATIV           = 0b1000_0000;
+    }
+}
+
+const STACK: u16 = 0x0100;
+const STACK_RESET: u8 = 0xfd;
 
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
@@ -20,7 +48,7 @@ pub struct CPU {
     pub register_a: u8,
     pub register_x: u8,
     pub register_y: u8,
-    pub status: u8,
+    pub status: CpuFlags,
     pub program_counter: u16,
     memory: [u8; 0xFFFF],
 }
@@ -31,7 +59,7 @@ impl CPU {
             register_a: 0,
             register_x: 0,
             register_y: 0,
-            status: 0,
+            status: CpuFlags::from_bits_truncate(0b100100),
             program_counter: 0,
             memory: [0; 0xFFFF],
         }
@@ -106,7 +134,7 @@ impl CPU {
     pub fn reset(&mut self) {
         self.register_a = 0;
         self.register_x = 0;
-        self.status = 0;
+        self.status = CpuFlags::from_bits_truncate(0b100100);
 
         self.program_counter = self.mem_read_u16(0xFFFC);
     }
@@ -120,6 +148,12 @@ impl CPU {
     pub fn load(&mut self, program: Vec<u8>) {
         self.memory[0x8000..(0x8000 + program.len())].copy_from_slice(&program[..]);
         self.mem_write_u16(0xFFFC, 0x8000);
+    }
+
+    fn adc(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+        self.add_to_register_a(value);
     }
 
     fn lda(&mut self, mode: &AddressingMode) {
@@ -148,17 +182,50 @@ impl CPU {
     fn update_zero_and_negative_flags(&mut self, result: u8) {
         // Zero Flag
         if result == 0 {
-            self.status |= 0b0000_0010;
+            self.status.insert(CpuFlags::ZERO);
         } else {
-            self.status &= 0b1111_1101;
+            self.status.remove(CpuFlags::ZERO);
         }
 
         // Negative Flag
         if result & 0b1000_0000 != 0 {
-            self.status |= 0b1000_0000;
+            self.status.insert(CpuFlags::NEGATIV);
         } else {
-            self.status &= 0b0111_1111;
+            self.status.remove(CpuFlags::NEGATIV);
         }
+    }
+
+    fn set_register_a(&mut self, value: u8) {
+        self.register_a = value;
+        self.update_zero_and_negative_flags(self.register_a);
+    }
+
+    /// note: ignoring decimal mode
+    fn add_to_register_a(&mut self, data: u8) {
+        let sum = self.register_a as u16 + data as u16 + (if self.status.contains(CpuFlags::CARRY) {
+            1
+        } else {
+            0
+        }) as u16;
+
+        let carry = sum > 0xff;
+
+        if carry {
+            self.status.insert(CpuFlags::CARRY);
+        } else {
+            self.status.remove(CpuFlags::CARRY);
+        }
+
+        let result = sum as u8;
+
+        // is set if for example 64 + 64 = -128
+        if (data ^ result) & (result ^ self.register_a) & 0x80 != 0 {
+            self.status.insert(CpuFlags::OVERFLOW);
+        } else {
+            self.status.remove(CpuFlags::OVERFLOW);
+        }
+
+        self.set_register_a(result);
     }
 
     pub fn run(&mut self) {
@@ -175,6 +242,7 @@ impl CPU {
                 .unwrap_or_else(|| panic!("OpCode {:x} is not recognized", code));
 
             match opcode.memonic {
+                "ADC" => self.adc(&opcode.mode),
                 "LDA" => self.lda(&opcode.mode),
                 "STA" => self.sta(&opcode.mode),
                 "TAX" => self.tax(),
@@ -205,22 +273,22 @@ mod test {
         let mut cpu = CPU::new();
         cpu.load_and_run(vec![0xa9, 0x05, 0x00]);
         assert_eq!(cpu.register_a, 0x05);
-        assert!(cpu.status & 0b0000_0010 == 0b00);
-        assert!(cpu.status & 0b1000_0000 == 0);
+        assert_eq!(cpu.status.bits() & 0b0000_0010, 0b00);
+        assert_eq!(cpu.status.bits() & 0b1000_0000, 0);
     }
 
     #[test]
     fn test_0xa9_lda_zero_flag() {
         let mut cpu = CPU::new();
         cpu.load_and_run(vec![0xa9, 0x00, 0x00]);
-        assert!(cpu.status & 0b0000_0010 == 0b10);
+        assert_eq!(cpu.status.bits() & 0b0000_0010, 0b10);
     }
 
     #[test]
     fn test_0xaa_tax_move_a_to_x() {
         let mut cpu = CPU::new();
         cpu.load_and_run(vec![0xa9, 0x0a, 0xaa, 0x00]);
-        assert_eq!(cpu.register_x, 10);
+        assert_eq!(cpu.register_x, 0x0a);
     }
 
     #[test]
@@ -247,5 +315,42 @@ mod test {
         cpu.load_and_run(vec![0xa5, 0x10, 0x00]);
 
         assert_eq!(cpu.register_a, 0x55);
+    }
+
+    #[test]
+    fn test_adc_add_to_empty() {
+        let mut cpu = CPU::new();
+
+        cpu.load_and_run(vec![0x69, 0x10, 0x00]);
+        assert_eq!(cpu.register_a, 0x10);
+    }
+
+    #[test]
+    fn test_adc_add() {
+        let mut cpu = CPU::new();
+
+        cpu.load_and_run(vec![0xa9, 0x10, 0x69, 0x10, 0x00]);
+
+        assert_eq!(cpu.register_a, 0x10 + 0x10);
+    }
+
+    #[test]
+    fn test_adc_carry() {
+        let mut cpu = CPU::new();
+
+        cpu.load_and_run(vec![0xa9, 0x10, 0x69, 0xff, 0x00]);
+
+        assert!(cpu.status.contains(CpuFlags::CARRY));
+    }
+
+    #[test]
+    fn test_adc_overflow() {
+        let mut cpu = CPU::new();
+
+        // 64 + 64 = -128
+        cpu.load_and_run(vec![0xa9, 64, 0x69, 64, 0x00]);
+
+        assert!(cpu.status.contains(CpuFlags::OVERFLOW));
+        assert_eq!(cpu.register_a, 0x80);
     }
 }
