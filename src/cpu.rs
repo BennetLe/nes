@@ -156,6 +156,14 @@ impl CPU {
         self.add_to_register_a(value);
     }
 
+    fn and(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        self.set_register_a(value & self.register_a);
+
+    }
+
     fn lda(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
@@ -243,6 +251,7 @@ impl CPU {
 
             match opcode.memonic {
                 "ADC" => self.adc(&opcode.mode),
+                "AND" => self.and(&opcode.mode),
                 "LDA" => self.lda(&opcode.mode),
                 "STA" => self.sta(&opcode.mode),
                 "TAX" => self.tax(),
@@ -352,5 +361,14 @@ mod test {
 
         assert!(cpu.status.contains(CpuFlags::OVERFLOW));
         assert_eq!(cpu.register_a, 0x80);
+    }
+
+    #[test]
+    fn test_and() {
+        let mut cpu = CPU::new();
+
+        cpu.load_and_run(vec![0xa9, 0b1010_1010, 0x29, 0b1111_1111, 0x00]);
+        
+        assert_eq!(cpu.register_a, 0b1010_1010);
     }
 }
