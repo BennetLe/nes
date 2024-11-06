@@ -153,6 +153,7 @@ impl CPU {
     fn adc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
+
         self.add_to_register_a(value);
     }
 
@@ -162,6 +163,31 @@ impl CPU {
 
         self.set_register_a(value & self.register_a);
 
+    }
+
+    fn asl(&mut self, mode: &AddressingMode) -> u8 {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        if data >> 7 == 1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+        data = data << 1;
+        self.mem_write(addr, data);
+        self.update_zero_and_negative_flags(data);
+        data
+    }
+
+    fn asl_acc(&mut self) {
+        let mut data = self.register_a;
+        if data >> 7 == 1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+        data = data << 1;
+        self.set_register_a(data);
     }
 
     fn lda(&mut self, mode: &AddressingMode) {
@@ -201,6 +227,14 @@ impl CPU {
         } else {
             self.status.remove(CpuFlags::NEGATIV);
         }
+    }
+    
+    fn set_carry_flag(&mut self) {
+        self.status.insert(CpuFlags::CARRY);
+    }
+    
+    fn clear_carry_flag(&mut self) {
+        self.status.remove(CpuFlags::CARRY);
     }
 
     fn set_register_a(&mut self, value: u8) {
@@ -249,14 +283,41 @@ impl CPU {
                 .get(&code)
                 .unwrap_or_else(|| panic!("OpCode {:x} is not recognized", code));
 
-            match opcode.memonic {
-                "ADC" => self.adc(&opcode.mode),
-                "AND" => self.and(&opcode.mode),
-                "LDA" => self.lda(&opcode.mode),
-                "STA" => self.sta(&opcode.mode),
-                "TAX" => self.tax(),
-                "INX" => self.inx(),
-                "BRK" => return,
+            match code {
+                /* ADC */
+                0x69 | 0x65 | 0x75 | 0x6d | 0x7d | 0x79 | 0x61 | 0x71 => {
+                    self.adc(&opcode.mode);
+                }
+                
+                /* AND */
+                0x29 | 0x25 | 0x35 | 0x2d | 0x3d | 0x39 | 0x21 | 0x31 => {
+                    self.and(&opcode.mode);
+                }
+                
+                /* ASL */
+                0x0a => self.asl_acc(),
+                0x06 | 0x16 | 0x0e | 0x1e => {
+                    self.asl(&opcode.mode);
+                }
+                
+                /* LDA */
+                0xa9 | 0xa5 | 0xb5 | 0xad | 0xbd | 0xb9 | 0xa1 | 0xb1 => {
+                    self.lda(&opcode.mode);
+                }
+
+                /* STA */
+                0x85 | 0x95 | 0x8d | 0x9d | 0x99 | 0x81 | 0x91 => {
+                    self.sta(&opcode.mode);
+                }
+                
+                /* TAX */
+                0xAA => self.tax(),
+                
+                /* INX */
+                0xe8 => self.inx(),
+                
+                /* BRK */
+                0x00 => return,
                 _ => todo!(),
             }
 
@@ -370,5 +431,22 @@ mod test {
         cpu.load_and_run(vec![0xa9, 0b1010_1010, 0x29, 0b1111_1111, 0x00]);
         
         assert_eq!(cpu.register_a, 0b1010_1010);
+    }
+    
+    #[test]
+    fn test_asl() {
+        let mut cpu = CPU::new();
+        
+        cpu.load_and_run(vec![0xa9, 0b0111_1111, 0x0a, 0x00]);
+        assert_eq!(cpu.register_a, 0b1111_1110);
+    }
+    
+    #[test]
+    fn test_asl_carry() {
+        let mut cpu = CPU::new();
+        
+        cpu.load_and_run(vec![0xa9, 0b1000_0000, 0x0a, 0x00]);
+        assert_eq!(cpu.register_a, 0b0000_0000);
+        assert!(cpu.status.contains(CpuFlags::CARRY));
     }
 }
